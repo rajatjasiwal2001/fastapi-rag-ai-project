@@ -1,23 +1,6 @@
-# Virtual env
-venv/
+node_modules/
+frontend/node_modules/
 .venv/
-
-# Python cache
-__pycache__/
-*.pyc
-
-# Env files
+venv/
 .env
-
-# DB / vector store
 chroma_db/
-.chroma/
-*.db
-*.sqlite3
-
-# OS / misc
-.DS_Store
-Thumbs.db
-
-# accidental files
-notepad.gitignore
