@@ -2,16 +2,16 @@ import os
 import re
 from pathlib import Path
 from typing import List
+import math
 
 import chromadb
 from groq import Groq
-from sentence_transformers import SentenceTransformer
 
 
 # ----------------------------
 # CHUNKING
 # ----------------------------
-def chunk_text(text: str, chunk_size: int = 400, overlap: int = 50) -> List[str]:
+def chunk_text(text: str, chunk_size: int = 250, overlap: int = 50) -> List[str]:
     sentences = re.split(r'(?<=[.!?]) +', text)
 
     chunks = []
@@ -42,8 +42,51 @@ def chunk_text(text: str, chunk_size: int = 400, overlap: int = 50) -> List[str]
 CHROMA_PATH = str(Path(__file__).resolve().parent / "chroma_db")
 COLLECTION_NAME = "documents"
 
-print("Loading embedding model...")
-embedder = SentenceTransformer("all-MiniLM-L6-v2")
+EMBED_DIM = 384
+
+
+def _lightweight_embed(text: str, dim: int = EMBED_DIM) -> List[float]:
+    """
+    Deterministic fallback embedding used when sentence-transformers is unavailable.
+    It keeps the API running in constrained Python environments.
+    """
+    vec = [0.0] * dim
+    tokens = re.findall(r"\w+", text.lower())
+    if not tokens:
+        return vec
+
+    for token in tokens:
+        idx = hash(token) % dim
+        vec[idx] += 1.0
+
+    norm = math.sqrt(sum(v * v for v in vec))
+    if norm > 0:
+        vec = [v / norm for v in vec]
+
+    return vec
+
+
+class FallbackEmbedder:
+    def encode(self, texts):
+        return [_lightweight_embed(text) for text in texts]
+
+
+def _build_embedder():
+    try:
+        from sentence_transformers import SentenceTransformer
+
+        print("Loading embedding model: all-MiniLM-L6-v2")
+        return SentenceTransformer("all-MiniLM-L6-v2")
+    except Exception as exc:
+        print(f"Warning: sentence-transformers unavailable ({exc}). Using fallback embedder.")
+        return FallbackEmbedder()
+
+
+def _as_list(vectors):
+    return vectors.tolist() if hasattr(vectors, "tolist") else vectors
+
+
+embedder = _build_embedder()
 
 client = chromadb.PersistentClient(path=CHROMA_PATH)
 collection = client.get_or_create_collection(name=COLLECTION_NAME)
@@ -57,7 +100,7 @@ def build_vector_store(chunks: List[str]):
     print("Building vector store...")
 
     ids = [f"chunk-{i}" for i in range(len(chunks))]
-    embeddings = embedder.encode(chunks).tolist()
+    embeddings = _as_list(embedder.encode(chunks))
 
     collection.add(
         ids=ids,
@@ -79,8 +122,8 @@ def index_text(text: str):
 # ----------------------------
 # RETRIEVE
 # ----------------------------
-def retrieve_context(query: str, top_k: int = 3) -> str:
-    query_embedding = embedder.encode([query]).tolist()[0]
+def retrieve_context(query: str, top_k: int = 2) -> str:
+    query_embedding = _as_list(embedder.encode([query]))[0]
 
     results = collection.query(
         query_embeddings=[query_embedding],

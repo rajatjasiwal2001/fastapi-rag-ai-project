@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from io import BytesIO
 from pypdf import PdfReader
 
-from rag_core import index_text, retrieve_context, ask_groq, collection
+from .rag_core import index_text, retrieve_context, ask_groq, collection
 
 load_dotenv()
 
