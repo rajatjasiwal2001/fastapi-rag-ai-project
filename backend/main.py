@@ -5,15 +5,12 @@ from dotenv import load_dotenv
 from io import BytesIO
 from pypdf import PdfReader
 
-from .rag_core import index_text, retrieve_context, ask_groq, collection
+from backend.rag_core import index_text, retrieve_context, ask_groq, collection
 
 load_dotenv()
 
 app = FastAPI(title="GenAI RAG API 🚀")
 
-# ----------------------------
-# CORS
-# ----------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,35 +19,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ----------------------------
-# MEMORY
-# ----------------------------
 chat_history = []
 
-# ----------------------------
-# SCHEMAS
-# ----------------------------
 class QueryRequest(BaseModel):
     query: str
 
 class QueryResponse(BaseModel):
     answer: str
 
-# ----------------------------
-# HEALTH CHECK
-# ----------------------------
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-# ----------------------------
-# UPLOAD FILE (TXT + PDF)
-# ----------------------------
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
     try:
         content = await file.read()
-
         text = ""
 
         if file.filename.endswith(".txt"):
@@ -75,14 +59,10 @@ async def upload_file(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-# ----------------------------
-# ASK QUESTION
-# ----------------------------
 @app.post("/ask", response_model=QueryResponse)
 def ask_question(payload: QueryRequest):
     try:
         context = retrieve_context(payload.query)
-
         history = "\n".join(chat_history[-4:])
 
         final_query = f"""
@@ -103,9 +83,6 @@ Current question:
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-# ----------------------------
-# RESET
-# ----------------------------
 @app.delete("/reset")
 def reset():
     ids = collection.get().get("ids", [])
@@ -113,5 +90,4 @@ def reset():
         collection.delete(ids=ids)
 
     chat_history.clear()
-
     return {"message": "Reset successful"}
