@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from io import BytesIO
 from pypdf import PdfReader
 
-from backend.rag_core import index_text, retrieve_context, ask_groq, collection
+from .rag_core import index_text, retrieve_context, ask_groq, collection
 
 load_dotenv()
 
@@ -37,10 +37,11 @@ async def upload_file(file: UploadFile = File(...)):
         content = await file.read()
         text = ""
 
-        if file.filename.endswith(".txt"):
+        filename = file.filename.lower()
+        if filename.endswith(".txt"):
             text = content.decode("utf-8")
 
-        elif file.filename.endswith(".pdf"):
+        elif filename.endswith(".pdf"):
             pdf = PdfReader(BytesIO(content))
             for page in pdf.pages:
                 extracted = page.extract_text()
@@ -62,14 +63,10 @@ async def upload_file(file: UploadFile = File(...)):
 @app.post("/ask", response_model=QueryResponse)
 def ask_question(payload: QueryRequest):
     try:
-        context = retrieve_context(payload.query)
-        history = "\n".join(chat_history[-4:])
+        context = retrieve_context(payload.query, top_k=8)
 
         final_query = f"""
-Previous conversation:
-{history}
-
-Current question:
+Question:
 {payload.query}
 """
 

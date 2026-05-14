@@ -1,8 +1,9 @@
 import os
 import re
+import uuid
+import math
 from pathlib import Path
 from typing import List
-import math
 
 import chromadb
 from groq import Groq
@@ -11,27 +12,27 @@ from groq import Groq
 # ----------------------------
 # CHUNKING
 # ----------------------------
-def chunk_text(text: str, chunk_size: int = 250, overlap: int = 50) -> List[str]:
-    sentences = re.split(r'(?<=[.!?]) +', text)
+# Split text into overlapping chunks so the retriever can match questions even
+# when the answer appears across sentence boundaries.
+# ----------------------------
 
+def chunk_text(text: str, chunk_size: int = 200, overlap: int = 75) -> List[str]:
+    normalized = re.sub(r"\s+", " ", text.replace("\n", " ")).strip()
+    if not normalized:
+        return []
+
+    words = normalized.split(" ")
     chunks = []
-    current_chunk = []
-    current_length = 0
+    start = 0
 
-    for sentence in sentences:
-        words = sentence.split()
+    while start < len(words):
+        end = min(start + chunk_size, len(words))
+        chunks.append(" ".join(words[start:end]))
 
-        if current_length + len(words) > chunk_size:
-            chunks.append(" ".join(current_chunk))
+        if end == len(words):
+            break
 
-            current_chunk = current_chunk[-overlap:] if overlap < len(current_chunk) else current_chunk
-            current_length = len(current_chunk)
-
-        current_chunk.extend(words)
-        current_length += len(words)
-
-    if current_chunk:
-        chunks.append(" ".join(current_chunk))
+        start = max(end - overlap, end)
 
     return chunks
 
@@ -41,15 +42,10 @@ def chunk_text(text: str, chunk_size: int = 250, overlap: int = 50) -> List[str]
 # ----------------------------
 CHROMA_PATH = str(Path(__file__).resolve().parent / "chroma_db")
 COLLECTION_NAME = "documents"
-
 EMBED_DIM = 384
 
 
 def _lightweight_embed(text: str, dim: int = EMBED_DIM) -> List[float]:
-    """
-    Deterministic fallback embedding used when sentence-transformers is unavailable.
-    It keeps the API running in constrained Python environments.
-    """
     vec = [0.0] * dim
     tokens = re.findall(r"\w+", text.lower())
     if not tokens:
@@ -87,19 +83,15 @@ def _as_list(vectors):
 
 
 embedder = _build_embedder()
-
 client = chromadb.PersistentClient(path=CHROMA_PATH)
 collection = client.get_or_create_collection(name=COLLECTION_NAME)
 
 
-def build_vector_store(chunks: List[str]):
-    if len(collection.get().get("ids", [])) > 0:
-        print("Using existing vector DB (skip rebuild)")
+def add_chunks_to_vector_store(chunks: List[str]):
+    if not chunks:
         return
 
-    print("Building vector store...")
-
-    ids = [f"chunk-{i}" for i in range(len(chunks))]
+    ids = [str(uuid.uuid4()) for _ in chunks]
     embeddings = _as_list(embedder.encode(chunks))
 
     collection.add(
@@ -108,7 +100,10 @@ def build_vector_store(chunks: List[str]):
         embeddings=embeddings,
     )
 
-    print("Vector store ready")
+    if hasattr(client, "persist"):
+        client.persist()
+
+    print(f"Indexed {len(chunks)} chunk(s) into ChromaDB")
 
 
 # ----------------------------
@@ -116,22 +111,26 @@ def build_vector_store(chunks: List[str]):
 # ----------------------------
 def index_text(text: str):
     chunks = chunk_text(text)
-    build_vector_store(chunks)
+    add_chunks_to_vector_store(chunks)
 
 
 # ----------------------------
 # RETRIEVE
 # ----------------------------
-def retrieve_context(query: str, top_k: int = 2) -> str:
+def retrieve_context(query: str, top_k: int = 8) -> str:
     query_embedding = _as_list(embedder.encode([query]))[0]
 
     results = collection.query(
         query_embeddings=[query_embedding],
         n_results=top_k,
+        include=["documents", "distances"],
     )
 
     docs = results.get("documents", [[]])[0]
-    return "\n\n".join(docs)
+    if not docs:
+        return ""
+
+    return "\n\n---\n\n".join(doc for doc in docs if doc)
 
 
 # ----------------------------
@@ -143,16 +142,17 @@ def ask_groq(query: str, context: str) -> str:
     if not api_key:
         raise ValueError("Missing GROQ_API_KEY in .env")
 
-    client = Groq(api_key=api_key)
+    if not context.strip():
+        return "I don't know"
 
+    client = Groq(api_key=api_key)
     prompt = f"""
 Answer using ONLY the given context.
 
 Rules:
-- Max 5 lines
-- Be concise
-- No repetition
-- If not found, say "I don't know"
+- Answer directly with the information from the context.
+- Do not invent or hallucinate.
+- If the answer is not found in the context, say "I don't know".
 
 Context:
 {context}
